@@ -64,6 +64,7 @@ import com.dimowner.audiorecorder.v2.audio.AudioRecordingService
 import com.dimowner.audiorecorder.v2.audio.AudioRecordingServiceEvent
 import com.dimowner.audiorecorder.v2.audio.NotEnoughSpaceException
 import com.dimowner.audiorecorder.v2.audio.isOutOfSpace
+import com.dimowner.audiorecorder.v2.audio.RecordingPreviewProvider
 import com.dimowner.audiorecorder.v2.audio.RecordingServiceState
 import com.dimowner.audiorecorder.v2.audio.RecordingState
 import com.dimowner.audiorecorder.v2.audio.readDescription
@@ -103,6 +104,7 @@ class HomeViewModel @Inject constructor(
     private val audioPlayer: PlayerContractNew.Player,
     private val audioManagerHelper: AudioManagerHelper,
     private val analyticsTracker: AnalyticsTracker,
+    private val recordingPreviewProvider: RecordingPreviewProvider,
     @param:MainDispatcher private val mainDispatcher: CoroutineDispatcher,
     @param:IoDispatcher private val ioDispatcher: CoroutineDispatcher,
     @ApplicationContext context: Context,
@@ -116,6 +118,18 @@ class HomeViewModel @Inject constructor(
 
     // Guards the "always use Bluetooth mic" auto-enable so it runs once per availability period
     private var bluetoothAutoEnableRequested = false
+
+    /**
+     * True while [audioPlayer] is playing a preview of the in-progress recording rather than a
+     * saved one. Player callbacks check it so a preview never rewrites the recording UI state
+     * (time, progress, play/stop buttons) that normal playback owns.
+     */
+    @Volatile
+    private var isPreviewMode = false
+
+    /** Cached playable copy of the in-progress recording currently being auditioned, if any. */
+    @Volatile
+    private var previewFile: File? = null
 
     private val _state = mutableStateOf(HomeScreenState())
     val state: State<HomeScreenState> = _state
@@ -437,6 +451,14 @@ class HomeViewModel @Inject constructor(
     private fun subscribePlayerUpdates() {
         audioPlayer.addPlayerCallback(callback = object : PlayerContractNew.PlayerCallback {
             override fun onStartPlay() {
+                if (isPreviewMode) {
+                    _state.value = _state.value.copy(
+                        isPreviewPreparing = false,
+                        isPreviewPlaying = true,
+                        isPreviewActive = true,
+                    )
+                    return
+                }
                 _state.value = _state.value.copy(
                     showPause = true,
                     showStop = true,
@@ -444,6 +466,9 @@ class HomeViewModel @Inject constructor(
             }
 
             override fun onPlayProgress(mills: Long) {
+                // A preview must not touch the recording UI: time and progress belong to the
+                // still-running recording, not to the snippet being auditioned.
+                if (isPreviewMode) return
                 if (!_state.value.isSeek) {
                     _state.value = _state.value.copy(
                         waveformState = _state.value.waveformState.copy(
@@ -458,6 +483,10 @@ class HomeViewModel @Inject constructor(
             }
 
             override fun onPausePlay() {
+                if (isPreviewMode) {
+                    _state.value = _state.value.copy(isPreviewPlaying = false)
+                    return
+                }
                 _state.value = _state.value.copy(
                     showPause = false,
                     showStop = true
@@ -469,6 +498,18 @@ class HomeViewModel @Inject constructor(
             }
 
             override fun onStopPlay() {
+                if (isPreviewMode) {
+                    isPreviewMode = false
+                    _state.value = _state.value.copy(
+                        isPreviewPlaying = false,
+                        isPreviewPreparing = false,
+                        isPreviewActive = false,
+                    )
+                    // The preview ended on its own (or was stopped); drop its cached copy so a
+                    // finished recording doesn't leave the snapshot behind in the app cache.
+                    deleteCurrentPreviewFile()
+                    return
+                }
                 _state.value = _state.value.copy(
                     showPause = false,
                     showStop = false,
@@ -478,6 +519,17 @@ class HomeViewModel @Inject constructor(
 
             override fun onError(throwable: AppException) {
                 Timber.e(throwable)
+                if (isPreviewMode) {
+                    isPreviewMode = false
+                    _state.value = _state.value.copy(
+                        isPreviewPlaying = false,
+                        isPreviewPreparing = false,
+                        isPreviewActive = false,
+                    )
+                    deleteCurrentPreviewFile()
+                    showInfoMessage(R.string.msg_preview_not_available)
+                    return
+                }
                 handleError(throwable)
             }
         })
@@ -598,6 +650,9 @@ class HomeViewModel @Inject constructor(
     }
 
     private fun onStop() {
+        // A preview is bound to the recording screen (and to a file that may be cleaned up), so it
+        // must not survive navigating away. Normal playback is intentionally left untouched.
+        releasePreview()
         recordingStateJob?.cancel()
         recordingStateJob = null
         recordingEventJob?.cancel()
@@ -1157,6 +1212,7 @@ class HomeViewModel @Inject constructor(
     // - If is playing, stop playback
     // - Start recording service
     fun handleStartRecordingClick() {
+        releasePreview()
         audioPlayer.stop()
         val context: Context = getApplication<Application>().applicationContext
 
@@ -1165,14 +1221,18 @@ class HomeViewModel @Inject constructor(
     }
 
     fun handlePauseRecordingClick() {
+        // A preview can't survive pausing: the file keeps growing while the recording is live.
+        releasePreview()
         recordingService?.pauseRecording()
     }
 
     fun handleResumeRecordingClick() {
+        releasePreview()
         recordingService?.resumeRecording()
     }
 
     fun handleStopRecordingClick() {
+        releasePreview()
         recordingService?.stopRecording()
         _state.value = state.value.copy(
             waveformState = _state.value.waveformState.copy(
@@ -1186,12 +1246,114 @@ class HomeViewModel @Inject constructor(
     }
 
     fun handleOnDeleteRecordingProgressClick() {
+        releasePreview()
         // Set the flag BEFORE stopping recording so handleRecordingStopped() sees it
         _state.value = state.value.copy(
             isDeleteRecordingProgressRequested = true,
             keepScreenOn = false,
         )
         recordingService?.stopRecording()
+    }
+
+    /**
+     * Starts, pauses or resumes an audition of the recording captured so far.
+     *
+     * The paused recording's file is not playable yet (WAV still has its placeholder header, M4A
+     * and 3GP are missing their container index), so [RecordingPreviewProvider] copies it and
+     * turns the copy into a readable file first.
+     */
+    fun handlePreviewPlayPauseClick() {
+        if (_state.value.isPreviewPreparing) return
+        if (audioPlayer.isPlaying()) {
+            audioPlayer.pause()
+            return
+        }
+        if (isPreviewMode && audioPlayer.isPaused()) {
+            audioPlayer.unpause()
+            return
+        }
+        viewModelScope.launch(ioDispatcher) {
+            startPreview()
+        }
+    }
+
+    fun handlePreviewStopClick() {
+        releasePreview()
+    }
+
+    private suspend fun startPreview() {
+        withContext(mainDispatcher) {
+            _state.value = _state.value.copy(isPreviewPreparing = true)
+        }
+
+        val recordId = prefs.recordedRecordId
+        val record = if (recordId >= 0) recordsDataSource.getRecord(recordId) else null
+        val playableFile = record?.let { recordingPreviewProvider.createPreviewFile(it) }
+
+        if (playableFile == null) {
+            withContext(mainDispatcher) {
+                _state.value = _state.value.copy(isPreviewPreparing = false)
+                showInfoMessage(R.string.msg_preview_not_available)
+            }
+            return
+        }
+
+        // Guard against the recording ending while the preview was being prepared.
+        if (_state.value.bottomBarState != BottomBarState.PAUSED) {
+            recordingPreviewProvider.deletePreviewFile(playableFile)
+            withContext(mainDispatcher) {
+                _state.value = _state.value.copy(isPreviewPreparing = false)
+            }
+            return
+        }
+
+        previewFile = playableFile
+        isPreviewMode = true
+        withContext(mainDispatcher) {
+            _state.value = _state.value.copy(
+                isPreviewPreparing = false,
+                isPreviewActive = true,
+            )
+        }
+        audioPlayer.play(playableFile.absolutePath)
+    }
+
+    /**
+     * Deletes the cached copy behind the current preview without touching other preview files, so
+     * a cleanup that arrives late can never remove a snapshot a newer preview is playing.
+     */
+    private fun deleteCurrentPreviewFile() {
+        val file = previewFile ?: return
+        previewFile = null
+        viewModelScope.launch(ioDispatcher) {
+            recordingPreviewProvider.deletePreviewFile(file)
+        }
+    }
+
+    /**
+     * Stops a running preview, drops its cached file and resets the preview UI. Called whenever
+     * the recording session moves on (pause/resume/stop/delete) so a leftover preview can never
+     * play over live recording or a saved record.
+     */
+    private fun releasePreview() {
+        val wasPreviewing = isPreviewMode || _state.value.isPreviewPlaying ||
+            _state.value.isPreviewPreparing || _state.value.isPreviewActive
+        if (isPreviewMode) {
+            // Stop unconditionally: the player may still be preparing the preview, in which case
+            // neither isPlaying() nor isPaused() is true yet. isPreviewMode stays set until the
+            // player's stop callback arrives so the callback treats it as a preview and skips the
+            // normal playback UI reset.
+            audioPlayer.stop()
+        }
+        previewFile = null
+        recordingPreviewProvider.clearPreviewFiles()
+        if (wasPreviewing) {
+            _state.value = _state.value.copy(
+                isPreviewPlaying = false,
+                isPreviewPreparing = false,
+                isPreviewActive = false,
+            )
+        }
     }
 
     fun handleRestoreRecordFromRecycle(recordId: Long) {
@@ -1289,6 +1451,8 @@ class HomeViewModel @Inject constructor(
             HomeScreenAction.OnPauseRecordingClick -> handlePauseRecordingClick()
             HomeScreenAction.OnResumeRecordingClick -> handleResumeRecordingClick()
             HomeScreenAction.OnStopRecordingClick -> handleStopRecordingClick()
+            HomeScreenAction.OnPreviewPlayPauseClick -> handlePreviewPlayPauseClick()
+            HomeScreenAction.OnPreviewStopClick -> handlePreviewStopClick()
             HomeScreenAction.OnDeleteRecordingProgressClick -> handleOnDeleteRecordingProgressClick()
             is HomeScreenAction.RestoreRecordFromRecycle -> handleRestoreRecordFromRecycle(action.recordId)
             is HomeScreenAction.SetBluetoothMicEnabled -> {
@@ -1463,6 +1627,8 @@ class HomeViewModel @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "Error releasing AudioManagerHelper")
         }
+        isPreviewMode = false
+        recordingPreviewProvider.clearPreviewFiles()
         unbindPlaybackService()
         unbindRecordingService()
     }
@@ -1491,6 +1657,12 @@ data class HomeScreenState(
     val bottomBarState: BottomBarState = BottomBarState.READY_TO_START_RECORDING,
     val showPause: Boolean = false,
     val showStop: Boolean = false,
+    /** True while the paused recording is being auditioned (the preview control shows "pause"). */
+    val isPreviewPlaying: Boolean = false,
+    /** True while the playable snapshot of the paused recording is being prepared. */
+    val isPreviewPreparing: Boolean = false,
+    /** True once a preview has been prepared; keeps the preview's stop control on screen. */
+    val isPreviewActive: Boolean = false,
     /** The playback rate selected in the speed menu and applied to the player. */
     val playbackSpeed: PlaybackSpeed = PlaybackSpeed.NORMAL,
     val isSeek: Boolean = false,
@@ -1553,6 +1725,8 @@ sealed class HomeScreenAction {
     data object OnPauseRecordingClick : HomeScreenAction()
     data object OnResumeRecordingClick : HomeScreenAction()
     data object OnStopRecordingClick : HomeScreenAction()
+    data object OnPreviewPlayPauseClick : HomeScreenAction()
+    data object OnPreviewStopClick : HomeScreenAction()
     data object OnDeleteRecordingProgressClick : HomeScreenAction()
     data class OnSeekProgress(val mills: Long) : HomeScreenAction()
     data class OnSeekEnd(val mills: Long) : HomeScreenAction()

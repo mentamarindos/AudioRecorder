@@ -453,6 +453,9 @@
     <!-- Recording Notification Status Messages -->
     <string name="status_recording_active">Recording in progress</string>
     <string name="status_recording_paused">Recording paused</string>
+    <!-- Preview of a paused recording -->
+    <string name="preview_recording">Preview</string>
+    <string name="msg_preview_not_available">This recording can\u2019t be previewed yet</string>
     <!-- Navigate back button description -->
     <string name="navigate_back">Navigate back</string>
     <!-- Dropdown menu button description -->

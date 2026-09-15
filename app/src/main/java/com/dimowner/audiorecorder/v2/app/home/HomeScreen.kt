@@ -351,6 +351,20 @@ internal fun HomeScreen(
                         }
                     )
                 }
+                // While paused the user can listen to what has been captured so far, without
+                // having to stop the recording first.
+                if (uiState.bottomBarState == BottomBarState.PAUSED) {
+                    RecordingPreviewPanel(
+                        modifier = Modifier
+                            .wrapContentSize()
+                            .padding(8.dp, 0.dp),
+                        isPlaying = uiState.isPreviewPlaying,
+                        isPreparing = uiState.isPreviewPreparing,
+                        isActive = uiState.isPreviewActive,
+                        onPlayPauseClick = { onAction(HomeScreenAction.OnPreviewPlayPauseClick) },
+                        onStopClick = { onAction(HomeScreenAction.OnPreviewStopClick) },
+                    )
+                }
             } else {
                 val waveformPainter = rememberSafePainterResource(R.drawable.waveform)
                 if (waveformPainter != null) {

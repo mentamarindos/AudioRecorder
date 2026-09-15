@@ -1,0 +1,57 @@
+name: Build APK (ARMv8)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      # The build uses compileSdk 37. Install it explicitly so the build does not depend on the
+      # platform happening to be preinstalled on the runner image.
+      - name: Install Android SDK platform
+        run: |
+          sdkmanager --install "platforms;android-37"
+          sdkmanager --list_installed
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # The app contains no native libraries (no .so, no jniLibs), so there is nothing to split
+      # per ABI: the produced APK runs on arm64-v8a (ARMv8) and every other supported ABI alike.
+      # The artifact is named for ARMv8 to match the requested target.
+      - name: Build release APK
+        run: ./gradlew assembleReleaseConfigRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx2560m"
+
+      - name: Upload ARMv8 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-recorder-arm64-v8a-release
+          path: app/build/outputs/apk/releaseConfig/release/*.apk
+          if-no-files-found: error

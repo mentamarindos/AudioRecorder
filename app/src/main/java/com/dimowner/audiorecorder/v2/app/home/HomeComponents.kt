@@ -47,6 +47,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -289,6 +290,89 @@ fun PlayPanelPreview() {
         onStopClick = {},
         onPauseClick = {},
         onPlaybackSpeedClick = {},
+    )
+}
+
+/**
+ * Audition controls for a recording that is paused part-way. The play button shows a spinner while
+ * the playable snapshot of the in-progress file is being prepared, and the stop button only appears
+ * once a preview exists so the user can drop it and start the audition over.
+ */
+@Composable
+fun RecordingPreviewPanel(
+    modifier: Modifier,
+    isPlaying: Boolean,
+    isPreparing: Boolean,
+    isActive: Boolean,
+    onPlayPauseClick: () -> Unit,
+    onStopClick: () -> Unit,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = stringResource(id = R.string.preview_recording),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Box(
+            modifier = Modifier.size(PLAY_BUTTON_SIZE),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (isPreparing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                IconButton(
+                    onClick = onDebounceClick(onPlayPauseClick),
+                    modifier = Modifier.size(PLAY_BUTTON_SIZE),
+                ) {
+                    Icon(
+                        painter = painterResource(
+                            id = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play
+                        ),
+                        contentDescription = stringResource(
+                            id = if (isPlaying) R.string.button_pause else R.string.btn_play
+                        ),
+                    )
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = isActive && !isPreparing,
+            enter = fadeIn(animationSpec = tween(ANIMATION_DURATION)),
+            exit = fadeOut(animationSpec = tween(ANIMATION_DURATION)),
+        ) {
+            IconButton(
+                onClick = onDebounceClick(onStopClick),
+                modifier = Modifier.size(PLAY_BUTTON_SIZE),
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_stop),
+                    contentDescription = stringResource(id = R.string.button_stop),
+                )
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun RecordingPreviewPanelPreview() {
+    RecordingPreviewPanel(
+        modifier = Modifier
+            .wrapContentSize()
+            .padding(8.dp, 8.dp),
+        isPlaying = false,
+        isPreparing = false,
+        isActive = true,
+        onPlayPauseClick = {},
+        onStopClick = {},
     )
 }
 
