@@ -24,10 +24,30 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # The ubuntu runner image already provides the Android SDK through ANDROID_HOME, so it is
-      # used as-is. android-actions/setup-android is deliberately avoided: it runs
-      # `sdkmanager tools`, and that legacy package no longer exists in the current SDK repository,
-      # which makes the action fail on today's runner images.
+      # The ubuntu runner image already contains the Android SDK, but it exports neither
+      # ANDROID_HOME nor cmdline-tools on PATH until something sets them up.
+      # android-actions/setup-android is deliberately not used: it runs `sdkmanager tools`, and
+      # that legacy package no longer exists in the current SDK repository, which makes the action
+      # fail on today's runner images.
+      - name: Set up Android SDK
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT" ]; then
+            echo "::error::Android SDK not found at $SDK_ROOT"
+            exit 1
+          fi
+          CMDLINE_BIN="$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -type d -name bin | head -n 1)"
+          if [ -z "$CMDLINE_BIN" ]; then
+            echo "::error::cmdline-tools not found under $SDK_ROOT"
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$CMDLINE_BIN" >> "$GITHUB_PATH"
+          echo "SDK root: $SDK_ROOT"
+          echo "cmdline-tools: $CMDLINE_BIN"
+
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses > /dev/null || true
 
