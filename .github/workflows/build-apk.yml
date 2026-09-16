@@ -72,9 +72,9 @@ jobs:
       - name: Build release APK
         run: ./gradlew assembleReleaseConfigRelease --stacktrace -Dorg.gradle.jvmargs="-Xmx2560m"
 
-      - name: Upload ARMv8 APK
+      - name: Upload ARMv8 APK (Simple Voice Recorder)
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: audio-recorder-arm64-v8a-release
+          name: simple-voice-recorder-arm64-v8a-release
           path: app/build/outputs/apk/releaseConfig/release/*.apk
           if-no-files-found: error

@@ -1,5 +1,4 @@
 <resources>
-	<string name="app_name">Gravadora d\'àudio</string>
 	<string name="records">Gravacions</string>
 	<string name="settings">Configuració</string>
 	<string name="setup">Configuració</string>

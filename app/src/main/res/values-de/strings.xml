@@ -1,5 +1,4 @@
 <resources>
-	<string name="app_name">Audio Recorder</string>
 
 	<string name="records">Aufnahmen</string>
 	<string name="settings">Einstellungen</string>

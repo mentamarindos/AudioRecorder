@@ -1,7 +1,6 @@
 <resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
 <!--Created by The Translator <https://play.google.com/store/apps/details?id=com.sunilpaulmathew.translator>-->
 
-	<string name="app_name">Grabador de Audio</string>
 	<string name="records">Grabaciones</string>
 	<string name="settings">Ajustes</string>
 	<string name="setup">Configuración</string>
