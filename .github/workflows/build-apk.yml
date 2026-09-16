@@ -52,9 +52,18 @@ jobs:
         run: yes | sdkmanager --licenses > /dev/null || true
 
       # The build uses compileSdk 37. Install it explicitly so the build does not depend on the
-      # platform happening to be preinstalled on the runner image.
+      # platform happening to be preinstalled on the runner image. API 37 is not in the stable
+      # channel, so a canary install is attempted when the stable lookup fails.
       - name: Install Android SDK platform
-        run: sdkmanager --install "platforms;android-37"
+        run: |
+          set -euo pipefail
+          if sdkmanager --install "platforms;android-37"; then
+            echo "Installed platforms;android-37 from the stable channel"
+          else
+            echo "::warning::platforms;android-37 is not in the stable channel, listing candidates"
+            sdkmanager --list | grep -E "platforms;android-3" || true
+            sdkmanager --channel=3 --install "platforms;android-37"
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
